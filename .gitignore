@@ -1,0 +1,21 @@
+# Binarios y temporales de compilación
+*.bin
+*.hex
+*.elf
+*.o
+*.d
+build/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

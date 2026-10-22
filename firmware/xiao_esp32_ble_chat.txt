@@ -1,0 +1,130 @@
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+// UUIDs oficiales del estandar Nordic UART Service (NUS)
+#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E" // iPhone -> ESP32 (Escritura)
+#define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // ESP32 -> iPhone (Notificacion)
+
+BLEServer *pServer = NULL;
+BLECharacteristic *pTxCharacteristic = NULL;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+
+#define LED_PIN LED_BUILTIN // GPIO 21
+
+// Callback de conexion/desconexion
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      digitalWrite(LED_PIN, LOW); // Enciende LED al conectar
+      Serial.println("\n[BLE] ¡iPhone conectado con exito!");
+      Serial.println("[BLE] Escriba un mensaje aqui arriba y presione Enter para enviarlo al iPhone.");
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      digitalWrite(LED_PIN, HIGH); // Apaga LED
+      Serial.println("\n[BLE] iPhone desconectado. Esperando nueva conexion...");
+    }
+};
+
+// Callback cuando el iPhone ENVIA un mensaje al ESP32
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String rxValue = pCharacteristic->getValue();
+
+      if (rxValue.length() > 0) {
+        Serial.println();
+        Serial.print("[DESDE IPHONE]: ");
+        for (int i = 0; i < rxValue.length(); i++) {
+          Serial.print(rxValue[i]);
+        }
+        Serial.println();
+      }
+    }
+};
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); // Apagado
+
+  unsigned long t = millis();
+  while (!Serial && (millis() - t < 3000));
+
+  Serial.println("\n==================================================");
+  Serial.println("   PUENTE BLUETOOTH BIDIRECCIONAL (UART BLE)");
+  Serial.println("   XIAO ESP32-S3 <---> iPhone (nRF Connect)");
+  Serial.println("==================================================");
+
+  // Inicializar dispositivo BLE
+  BLEDevice::init("XIAO-ESP32-CHAT");
+
+  // Crear Servidor BLE
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Crear Servicio UART
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Caracteristica TX (Para transmitir hacia el iPhone)
+  pTxCharacteristic = pService->createCharacteristic(
+                        CHARACTERISTIC_UUID_TX,
+                        BLECharacteristic::PROPERTY_NOTIFY
+                      );
+  pTxCharacteristic->addDescriptor(new BLE2902());
+
+  // Caracteristica RX (Para recibir mensajes del iPhone)
+  BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
+                                           CHARACTERISTIC_UUID_RX,
+                                           BLECharacteristic::PROPERTY_WRITE
+                                         );
+  pRxCharacteristic->setCallbacks(new MyCallbacks());
+
+  pService->start();
+
+  // Iniciar anuncio para que aparezca en el escaner de la app
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+
+  Serial.println("[BLE] Listo. Busque 'XIAO-ESP32-CHAT' en su iPhone.");
+  Serial.println("==================================================");
+}
+
+void loop() {
+  // 1. Enviar desde la PC hacia el iPhone:
+  // Si el usuario escribe algo en el Monitor Serie de Arduino y presiona Enter
+  if (Serial.available() > 0) {
+    String mensaje = Serial.readStringUntil('\n');
+    mensaje.trim(); // Eliminar saltos de linea
+
+    if (mensaje.length() > 0) {
+      if (deviceConnected) {
+        pTxCharacteristic->setValue(mensaje.c_str());
+        pTxCharacteristic->notify(); // Envia inmediatamente al iPhone
+
+        Serial.print("[ENVIADO A IPHONE]: ");
+        Serial.println(mensaje);
+      } else {
+        Serial.println("[AVISO] No se pudo enviar: el iPhone no esta conectado aun.");
+      }
+    }
+  }
+
+  // 2. Gestion de reconexion automatica si se pierde el enlace
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500);
+    pServer->startAdvertising(); // Reiniciar anuncio BLE
+    oldDeviceConnected = deviceConnected;
+  }
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+  }
+}
